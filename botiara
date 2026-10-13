@@ -6,7 +6,7 @@ from playwright.async_api import async_playwright
 
 # =====================================================================
 # 🔑 ВСТАВЬТЕ СВОЙ БЕСПЛАТНЫЙ КЛЮЧ ИЗ OPENROUTER В КАВЫЧКИ НИЖЕ (СТРОКА 8):
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = ""
 
 
 # =====================================================================
