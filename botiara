@@ -1,0 +1,208 @@
+import asyncio
+import json
+import random
+import requests
+from playwright.async_api import async_playwright
+
+# =====================================================================
+# 🔑 ВСТАВЬТЕ СВОЙ БЕСПЛАТНЫЙ КЛЮЧ ИЗ OPENROUTER В КАВЫЧКИ НИЖЕ (СТРОКА 8):
+OPENROUTER_API_KEY = "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"
+
+
+# =====================================================================
+
+def ask_free_ai(question, options):
+    """
+    Отправляет вопрос в бесплатную нейросеть через OpenRouter API.
+    """
+    print(f"🤖 [ИИ]: Запрашиваю правильный ответ у Gemini...")
+
+    if OPENROUTER_API_KEY == "СЮДА_ВСТАВЬТЕ_ВАШ_КЛЮЧ_ОТ_OPENROUTER" or not OPENROUTER_API_KEY.startswith("sk-or-"):
+        print("⚠️ Ошибка: Ключ OpenRouter не вставлен в строку №8 или указан неверно! Включаю резерв.")
+        return [options] if options else []
+
+    prompt = (
+        f"Ты — школьный отличник. Реши задание теста по истории.\n"
+        f"Вопрос: {question}\n"
+        f"Варианты ответа: {options}\n\n"
+        f"ИНСТРУКЦИЯ: Выбери один или несколько правильных вариантов ответа из списка. "
+        f"Верни ответ СТРОГО в виде JSON-списка строк, содержащих точный текст выбранных вариантов. "
+        f"Ничего другого не пиши. Пример ответа: [\"Вариант 1\", \"Вариант 2\"]"
+    )
+
+    try:
+        response = requests.post(
+            url="https://openrouter.ai",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost",
+            },
+            json={
+                "model": "google/gemini-2.5-flash",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 150
+            }
+        )
+
+        result = response.json()
+        ai_text = result["choices"][0]["message"]["content"].strip()
+
+        if "```" in ai_text:
+            ai_text = ai_text.replace("```json", "").replace("```", "").strip()
+
+        ai_answers = json.loads(ai_text)
+        if isinstance(ai_answers, list):
+            return ai_answers
+        return [str(ai_answers)]
+
+    except Exception as e:
+        print(f"⚠️ [ИИ]: Не удалось получить ответ ИИ (проверьте баланс/ключ на OpenRouter). Беру резерв.")
+        return [options[0]] if options else []
+
+
+async def parse_current_question(page):
+    """
+    Точный парсер под реальную верстку Онлайн-Школы №1.
+    """
+    # Вытаскиваем все текстовые блоки
+    all_text = await page.locator("div, p, span, label, form").all_inner_texts()
+    filtered_text = [text.strip() for text in all_text if text.strip()]
+
+    question_context = ""
+    options = []
+
+    # 1. Ищем формулировку вопроса
+    for text in filtered_text:
+        if "Вопрос:" in text:
+            lines = [line.strip() for line in text.split("\n") if line.strip()]
+            for i, line in enumerate(lines):
+                if "Вопрос:" in line and i + 1 < len(lines):
+                    question_context = lines[i + 1]
+                    break
+            break
+
+    # Если через "Вопрос:" не нашлось, берем верхнюю часть текстового блока теста
+    if not question_context:
+        for text in filtered_text:
+            if "Завершить тест" in text:
+                lines = [line.strip() for line in text.split("\n") if line.strip()]
+                cleaned = [l for l in lines if l not in ["Пропустить", "Ответить", "К уроку", "Завершить тест", "Назад",
+                                                         "Список вопросов"] and not l.isdigit()]
+                if cleaned:
+                    question_context = cleaned[0]
+                break
+
+    # 2. Ищем варианты ответов СТРОГО по найденному вами классу элементов школы
+    labels = await page.locator(".test-question-answer-item__text, .test-question-answer-item").all_inner_texts()
+    for l in labels:
+        l_clean = l.strip()
+        if l_clean and l_clean not in ["Пропустить", "Ответить", "К уроку", "Завершить тест", "Назад",
+                                       "Список вопросов"]:
+            opt_text = l_clean.split("\n")[0].strip()  # Берем чистый текст варианта
+            if opt_text and opt_text not in options:
+                options.append(opt_text)
+
+    return question_context, options
+
+
+async def solve_single_question(page):
+    question, options = await parse_current_question(page)
+
+    if not options:
+        # Проверка на поле ввода слова
+        input_field = page.locator("input[type='text'], textarea").first
+        if await input_field.count() > 0:
+            print("📝 Обнаружено задание с вводом слова! Этот тип мы настроим позже.")
+        return False
+
+    if not question:
+        question = "Текстовый вопрос истории"
+
+    print(f"\n========================================")
+    print(f"📝 ВОПРОС НА ЭКРАНЕ: {question}")
+    print(f"🔢 НАЙДЕННЫЕ ВАРИАНТЫ: {options}")
+    print(f"========================================")
+
+    ai_answers = ask_free_ai(question, options)
+    print(f"🎯 [ИИ СКАЗАЛ ВЫБРАТЬ]: {ai_answers}")
+
+    matched_options = []
+    for ai_ans in ai_answers:
+        for opt in options:
+            if opt.lower() in ai_ans.lower() or ai_ans.lower() in opt.lower():
+                if opt not in matched_options:
+                    matched_options.append(opt)
+
+    if not matched_options and options:
+        matched_options = [options[0]]
+        print(f"⚠️ Совпадений нет, берем защитный вариант: {matched_options}")
+
+    think_time = random.randint(10, 15)
+    print(f"⏱️ [МАСКИРОВКА]: Имитируем размышления. Пауза {think_time} сек...")
+    await asyncio.sleep(think_time)
+
+    # Кликаем СТРОГО по элементам вариантов ответов школы
+    for target_text in matched_options:
+        try:
+            # Ищем блок ответа по тексту, который лежит внутри класса, присланного вами
+            target_option = page.locator(f".test-question-answer-item:has-text('{target_text}')").first
+            if await target_option.count() == 0:
+                target_option = page.get_by_text(target_text, exact=True)
+
+            await target_option.click()
+            print(f"✅ Успешно кликнули по: {target_text}")
+            await asyncio.sleep(1)
+        except Exception as e:
+            print(f"❌ Ошибка клика по блоку '{target_text}': {e}")
+
+    await asyncio.sleep(2)
+
+    # Нажимаем «Ответить»
+    try:
+        submit_button = page.locator("button:has-text('Ответить')").first
+        if await submit_button.count() == 0:
+            submit_button = page.get_by_role("button", name="Ответить").first
+        await submit_button.click()
+        print("🚀 Кнопка 'Ответить' нажата успешно!")
+        return True
+    except Exception as e:
+        print(f"❌ Не удалось нажать кнопку 'Ответить': {e}")
+        return False
+
+
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context()
+        page = await context.new_page()
+
+        print("\n[ИНСТРУКЦИЯ]:")
+        print("1. Запустите код с рабочим OpenRouter API ключом.")
+        print("2. Откройте первый вопрос теста по Истории.")
+        print("3. Нажмите ENTER в PyCharm.\n")
+
+        await page.goto("https://onlineschool-1.ru", timeout=0, wait_until="commit")
+
+        input("НАЖМИТЕ ENTER ТУТ, КОГДА ОТКРОЕТЕ ТЕСТ...")
+
+        question_counter = 1
+        while True:
+            print(f"\n--- [ШАГ {question_counter}] Решаем текущее задание ---")
+            success = await solve_single_question(page)
+            if not success:
+                print("\n🛑 Цикл остановлен на сложном задании (ввод слова/сопоставление).")
+                break
+
+            question_counter += 1
+            print("⏳ Ожидаем загрузки следующего вопроса...")
+            await asyncio.sleep(5)
+
+        print("\n[ФИНИШ]: Бот передал управление вам. Браузер закроется через 30 секунд.")
+        await asyncio.sleep(30)
+        await browser.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
